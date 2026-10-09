@@ -41,6 +41,37 @@ void mc_line(float *target, plan_line_data_t *pl_data)
   // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
   if (sys.state == STATE_CHECK_MODE) { return; }
 
+  // ---- ALOE PATCH: block motion toward a pressed hard limit switch ----
+  // If any hard limit switch is currently pressed, block motion in the direction of that
+  // switch. Motion away from the switch is still allowed so the machine can be recovered.
+  // Uses the homing direction mask ($23) to determine which side each switch is on.
+  // Homing bypasses mc_line, so this does not interfere with the homing cycle.
+  float target_mod[N_AXIS];
+  float *target_ptr = target;              // Default: original target, no copy
+  {
+    uint8_t limit_state = limits_get_state();
+    if (limit_state) {
+      memcpy(target_mod, target, sizeof(target_mod));  // Copy ONLY when a switch is pressed
+      float current_mpos[N_AXIS];
+      system_convert_array_steps_to_mpos(current_mpos, sys_position);
+      uint8_t idx;
+      for (idx=0; idx<N_AXIS; idx++) {
+        if (limit_state & (1<<idx)) {
+          if (bit_istrue(settings.homing_dir_mask,bit(idx))) {
+            // Homing moves negative -> switch is on the minus side. Block negative motion.
+            if (target_mod[idx] < current_mpos[idx]) { target_mod[idx] = current_mpos[idx]; }
+          } else {
+            // Homing moves positive -> switch is on the plus side. Block positive motion.
+            if (target_mod[idx] > current_mpos[idx]) { target_mod[idx] = current_mpos[idx]; }
+          }
+        }
+      }
+      target_ptr = target_mod;             // Planner gets the safe copy
+      gc_sync_position();                  // Resync parser: prevents drift from a clamped block
+    }
+  }
+  // ---- END PATCH ----
+  
   // NOTE: Backlash compensation may be installed here. It will need direction info to track when
   // to insert a backlash line motion(s) before the intended line motion and will require its own
   // plan_check_full_buffer() and check for system abort loop. Also for position reporting
