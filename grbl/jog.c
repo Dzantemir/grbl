@@ -36,6 +36,32 @@ uint8_t jog_execute(plan_line_data_t *pl_data, parser_block_t *gc_block)
     if (system_check_travel_limits(gc_block->values.xyz)) { return(STATUS_TRAVEL_EXCEEDED); }
   }
 
+  // ---- ALOE PATCH: hard-limit direction guard for jog ----
+  // Block jog motion toward a pressed hard-limit switch BEFORE mc_line().
+  // Returns an error status, so gcode.c does NOT memcpy the parser position
+  // (gc_state.position) -- otherwise the parser drifts ahead of sys_position
+  // and the reverse-direction jog appears "stuck" for several clicks.
+  {
+    uint8_t limit_state = limits_get_state();
+    if (limit_state) {
+      float current_mpos[N_AXIS];
+      system_convert_array_steps_to_mpos(current_mpos, sys_position);
+      uint8_t idx;
+      for (idx=0; idx<N_AXIS; idx++) {
+        if (limit_state & (1<<idx)) {
+          if (bit_istrue(settings.homing_dir_mask,bit(idx))) {
+            // Switch on minus side: block negative jog.
+            if (gc_block->values.xyz[idx] < current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
+          } else {
+            // Switch on plus side: block positive jog.
+            if (gc_block->values.xyz[idx] > current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
+          }
+        }
+      }
+    }
+  }
+  // ---- END PATCH ----
+  
   // Valid jog command. Plan, set state, and execute.
   mc_line(gc_block->values.xyz,pl_data);
   if (sys.state == STATE_IDLE) {
