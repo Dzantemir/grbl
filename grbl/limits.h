@@ -35,6 +35,10 @@ uint8_t limits_get_state();
 // Perform one portion of the homing cycle based on the input settings.
 void limits_go_home(uint8_t cycle_mask);
 
+// FIXED7: automatic limit escape for $T<axis><+|-> (see limits.c for details).
+// Returns true when the declared axis input released and the $27 pull-off finished.
+uint8_t limits_escape(uint8_t axis, uint8_t negative);
+
 // Check for soft limit violations
 void limits_soft_check(float *target);
 

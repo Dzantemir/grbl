@@ -20,6 +20,7 @@
 */
 
 #include "grbl.h"
+#include <stddef.h> // offsetof() used by the settings-v10 migration layout check
 
 settings_t settings;
 
@@ -38,6 +39,7 @@ const __flash settings_t defaults = {\
     .homing_seek_rate = DEFAULT_HOMING_SEEK_RATE,
     .homing_debounce_delay = DEFAULT_HOMING_DEBOUNCE_DELAY,
     .homing_pulloff = DEFAULT_HOMING_PULLOFF,
+    .limit_motion_protection = 1,
     .flags = (DEFAULT_REPORT_INCHES << BIT_REPORT_INCHES) | \
              (DEFAULT_LASER_MODE << BIT_LASER_MODE) | \
              (DEFAULT_INVERT_ST_ENABLE << BIT_INVERT_ST_ENABLE) | \
@@ -173,6 +175,42 @@ uint8_t settings_read_coord_data(uint8_t coord_select, float *coord_data)
 }
 
 
+// Mirror of settings_t as it was stored in SETTINGS_VERSION 10, before the $28
+// (limit_motion_protection) byte was appended. It is used ONLY for EEPROM migration,
+// because memcpy_from_eeprom_with_checksum() must be told the exact size of the legacy
+// record so it compares against the checksum at its true storage address (the byte right
+// after the legacy data). Deriving the size from sizeof(settings_t) is wrong once struct
+// padding is taken into account: the appended uint8_t rounds the new struct size up, so the
+// old code read past the legacy record and always failed the checksum, wiping all EEPROM
+// data on the first boot after upgrade. Keep the field order identical to settings_t and
+// keep this mirror in sync whenever a future setting is appended again.
+typedef struct {
+  float steps_per_mm[N_AXIS];
+  float max_rate[N_AXIS];
+  float acceleration[N_AXIS];
+  float max_travel[N_AXIS];
+  uint8_t pulse_microseconds;
+  uint8_t step_invert_mask;
+  uint8_t dir_invert_mask;
+  uint8_t stepper_idle_lock_time;
+  uint8_t status_report_mask;
+  float junction_deviation;
+  float arc_tolerance;
+  float rpm_max;
+  float rpm_min;
+  uint8_t flags;
+  uint8_t homing_dir_mask;
+  float homing_feed_rate;
+  float homing_seek_rate;
+  uint16_t homing_debounce_delay;
+  float homing_pulloff;
+} settings_v10_t;
+
+// Compile-time guard: the legacy mirror must cover exactly the bytes that precede the
+// newly appended setting (i.e. no padding/layout mismatch between the two structs).
+typedef char settings_v10_layout_check[
+  (sizeof(settings_v10_t) == offsetof(settings_t, limit_motion_protection)) ? 1 : -1];
+
 // Reads Grbl global settings struct from EEPROM.
 uint8_t read_global_settings() {
   // Check version-byte of eeprom
@@ -182,6 +220,18 @@ uint8_t read_global_settings() {
     if (!(memcpy_from_eeprom_with_checksum((char*)&settings, EEPROM_ADDR_GLOBAL, sizeof(settings_t)))) {
       return(false);
     }
+  } else if (version == (SETTINGS_VERSION - 1)) {
+    // Migrate settings version 10 -> 11. Read the legacy record using its own size, so the
+    // checksum is fetched from the address it was actually written to. All machine settings
+    // are preserved; the new limit-direction protection ($28) is enabled by default.
+    settings_v10_t legacy;
+    if (!(memcpy_from_eeprom_with_checksum((char*)&legacy, EEPROM_ADDR_GLOBAL, sizeof(legacy)))) {
+      return(false);
+    }
+    memset(&settings, 0, sizeof(settings));
+    memcpy(&settings, &legacy, sizeof(legacy)); // Identical prefix layout, only one byte appended.
+    settings.limit_motion_protection = 1;
+    write_global_settings();
   } else {
     return(false);
   }
@@ -284,6 +334,10 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
       case 25: settings.homing_seek_rate = value; break;
       case 26: settings.homing_debounce_delay = int_value; break;
       case 27: settings.homing_pulloff = value; break;
+      case 28:
+        if ((value != 0.0) && (value != 1.0)) { return(STATUS_INVALID_STATEMENT); }
+        settings.limit_motion_protection = (uint8_t)value;
+        break;
       case 30: settings.rpm_max = value; spindle_init(); break; // Re-initialize spindle rpm calibration
       case 31: settings.rpm_min = value; spindle_init(); break; // Re-initialize spindle rpm calibration
       case 32:

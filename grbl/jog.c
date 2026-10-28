@@ -32,49 +32,38 @@ uint8_t jog_execute(plan_line_data_t *pl_data, parser_block_t *gc_block)
     pl_data->line_number = gc_block->values.n;
   #endif
 
-  if (bit_istrue(settings.flags,BITFLAG_SOFT_LIMIT_ENABLE)) {
-    if (system_check_travel_limits(gc_block->values.xyz)) { return(STATUS_TRAVEL_EXCEEDED); }
+  // ---- ALOE PATCH: optional hard-limit motion lock ($28/$T) ----
+  // $28=0 leaves stock Grbl Jog behavior untouched. While protection is active and ANY
+  // limit input is pressed, ALL axes are locked in both directions; the way out is the
+  // firmware-side escape command $T<axis><dir> or disabling $28. The limit inputs are
+  // sampled for the $28 feature only, so stock builds keep their original code path.
+  uint8_t limit_state = 0;
+  if (settings.limit_motion_protection) {
+    limit_state = limits_get_state();
   }
 
-  // ---- ALOE PATCH: hard-limit direction guard for jog ----
-  // Block jog motion toward a pressed hard-limit switch BEFORE mc_line().
-  // Returns an error status, so gcode.c does NOT memcpy the parser position
-  // (gc_state.position) -- otherwise the parser drifts ahead of sys_position
-  // and the reverse-direction jog appears "stuck" for several clicks.
-  {
-    uint8_t limit_state = limits_get_state();
-    sys.limit_trip_mask &= limit_state; // Forget latched direction for any released switch.
-    if (limit_state) {
-      float current_mpos[N_AXIS];
-      system_convert_array_steps_to_mpos(current_mpos, sys_position);
-      uint8_t idx;
-      for (idx=0; idx<N_AXIS; idx++) {
-        if (limit_state & (1<<idx)) {
-          // ALOE PATCH: Block the direction latched at the moment this axis tripped (see
-          // the limit ISR and mc_line()). Falls back to the $23 homing side when the switch
-          // tripped without motion (e.g. pressed by hand at standstill).
-          uint8_t block_positive;
-          if (sys.limit_trip_mask & bit(idx)) {
-            block_positive = !bit_istrue(sys.limit_trip_dir,bit(idx)); // Latched bit set = was moving negative.
-          } else if (bit_istrue(settings.homing_dir_mask,bit(idx))) {
-            block_positive = false; // Homing moves negative -> homing switch is on the minus side.
-          } else {
-            block_positive = true;  // Homing moves positive -> homing switch is on the plus side.
-          }
-          if (block_positive) {
-            // Switch on plus side: block positive jog.
-            if (gc_block->values.xyz[idx] > current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
-          } else {
-            // Switch on minus side: block negative jog.
-            if (gc_block->values.xyz[idx] < current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
-          }
-        }
-      }
+  // Stock soft-limit ($20) travel check, exactly as in vanilla Grbl (FIXED7: the
+  // fork-added bypass is gone - the $T escape never goes through the jog path).
+  if (bit_istrue(settings.flags,BITFLAG_SOFT_LIMIT_ENABLE)) {
+    if (system_check_travel_limits(gc_block->values.xyz)) {
+      return(STATUS_TRAVEL_EXCEEDED);
+    }
+  }
+
+  if (limit_protection_active() && limit_state) {
+    float current_mpos[N_AXIS];
+    system_convert_array_steps_to_mpos(current_mpos, sys_position);
+    uint8_t idx;
+    for (idx=0; idx<N_AXIS; idx++) {
+      // Any active limit input locks every axis; no direction guessing is involved.
+      // FIXED7: there is no jog-based recovery anymore - the only way off a pressed
+      // switch is the firmware-side $T<axis><dir> escape (see system.c / limits.c).
+      if (gc_block->values.xyz[idx] != current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
     }
   }
   // ---- END PATCH ----
 
-  // Valid jog command. Plan, set state, and execute.
+  // Valid jog motion. Plan, set state, and execute.
   mc_line(gc_block->values.xyz,pl_data);
   if (sys.state == STATE_IDLE) {
     if (plan_get_current_block() != NULL) { // Check if there is a block to execute.

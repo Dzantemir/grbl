@@ -32,7 +32,7 @@
 void mc_line(float *target, plan_line_data_t *pl_data)
 {
   // If enabled, check for soft limit violations. Placed here all line motions are picked up
-  // from everywhere in Grbl.
+  // from everywhere in Grbl. FIXED7: fully stock $20 behavior, no fork-added bypass.
   if (bit_istrue(settings.flags,BITFLAG_SOFT_LIMIT_ENABLE)) {
     // NOTE: Block jog state. Jogging is a special case and soft limits are handled independently.
     if (sys.state != STATE_JOG) { limits_soft_check(target); }
@@ -41,45 +41,19 @@ void mc_line(float *target, plan_line_data_t *pl_data)
   // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
   if (sys.state == STATE_CHECK_MODE) { return; }
 
-  // ---- ALOE PATCH: block motion toward a pressed hard limit switch ----
-  // If any hard limit switch is currently pressed, block motion in the direction of that
-  // switch. Motion away from the switch is still allowed so the machine can be recovered.
-  // The blocked side comes from the direction latched when that axis tripped (see the limit
-  // ISR); if it tripped without motion, the $23 homing side is used as a fallback.
-  // Target is clamped in-place in the caller's array so the g-code parser adopts the clamped
-  // position after mc_line() returns and cannot drift ahead of the machine.
-  // Homing bypasses mc_line, so this does not interfere with the homing cycle.
-  {
+  // ---- ALOE PATCH: optional hard-limit motion lock ($28) ----
+  // $28=0 leaves stock Grbl behavior untouched. Otherwise, if ANY limit input is active,
+  // every axis is held at its current machine position so no motion can be planned: the
+  // machine stays fully locked until the operator runs the $T<axis><dir> escape or turns
+  // $28 off. No direction is inferred or guessed.
+  if (limit_protection_active()) {
     uint8_t limit_state = limits_get_state();
-    sys.limit_trip_mask &= limit_state; // Forget latched direction for any released switch.
     if (limit_state) {
       float current_mpos[N_AXIS];
       system_convert_array_steps_to_mpos(current_mpos, sys_position);
       uint8_t idx;
       for (idx=0; idx<N_AXIS; idx++) {
-        if (limit_state & (1<<idx)) {
-          // ALOE PATCH: Determine the blocked side dynamically. When this axis tripped while
-          // the machine was moving (direction latched in the limit ISR for this very axis),
-          // block the direction of that motion -- i.e. toward the switch that actually
-          // tripped. Required for machines with switches on BOTH ends of an axis sharing one
-          // limit pin, where the $23 homing side only describes the homing switch. Otherwise
-          // (switch closed at standstill) fall back to the $23 homing side.
-          uint8_t block_positive;
-          if (sys.limit_trip_mask & bit(idx)) {
-            block_positive = !bit_istrue(sys.limit_trip_dir,bit(idx)); // Latched bit set = was moving negative.
-          } else if (bit_istrue(settings.homing_dir_mask,bit(idx))) {
-            block_positive = false; // Homing moves negative -> homing switch is on the minus side.
-          } else {
-            block_positive = true;  // Homing moves positive -> homing switch is on the plus side.
-          }
-          if (block_positive) {
-            // Switch is on the plus side. Block positive motion.
-            if (target[idx] > current_mpos[idx]) { target[idx] = current_mpos[idx]; }
-          } else {
-            // Switch is on the minus side. Block negative motion.
-            if (target[idx] < current_mpos[idx]) { target[idx] = current_mpos[idx]; }
-          }
-        }
+        target[idx] = current_mpos[idx];
       }
     }
   }
@@ -292,6 +266,30 @@ void mc_homing_cycle(uint8_t cycle_mask)
 
   // If hard limits feature enabled, re-enable hard limits pin change register after homing cycle.
   limits_init();
+}
+
+
+// FIXED7: operator-declared automatic limit escape, executed by $T<axis><+|->.
+// Mirrors mc_homing_cycle()'s environment handling: hard-limit pin interrupts are
+// disabled while the machine deliberately rides a pressed switch, and re-enabled
+// afterwards per $21. The actual motion lives in limits_escape(). The caller
+// (system.c) has already verified $28=1, IDLE/ALARM state, a closed safety door,
+// an active limit input on the declared axis, and has set STATE_HOMING.
+// Returns STATUS_OK when the declared input released and the $27 pull-off finished,
+// STATUS_TRAVEL_EXCEEDED when the LIMIT_RECOVERY_MAX_TRAVEL budget was used up with
+// the input still active (wrong declared direction, wiring, or a jammed switch).
+uint8_t mc_limit_escape(uint8_t axis, uint8_t negative)
+{
+  limits_disable(); // No limit pin-change interrupts while sitting on a switch.
+  uint8_t released = limits_escape(axis, negative);
+  if (sys.abort) { return(STATUS_TRAVEL_EXCEEDED); } // Reset/door during escape.
+  // sys_position has physically changed through a planner-direct system motion:
+  // resync the g-code parser and planner views, exactly like homing does.
+  gc_sync_position();
+  plan_sync_position();
+  limits_init(); // Re-enable hard limits pin change register per $21.
+  if (released) { return(STATUS_OK); }
+  return(STATUS_TRAVEL_EXCEEDED);
 }
 
 

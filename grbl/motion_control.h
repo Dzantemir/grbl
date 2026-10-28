@@ -51,6 +51,10 @@ void mc_dwell(float seconds);
 // Perform homing cycle to locate machine zero. Requires limit switches.
 void mc_homing_cycle(uint8_t cycle_mask);
 
+// FIXED7: automatic limit escape for $T<axis><+|->. Returns STATUS_OK or
+// STATUS_TRAVEL_EXCEEDED (budget used up, input still active).
+uint8_t mc_limit_escape(uint8_t axis, uint8_t negative);
+
 // Perform tool length probe cycle. Requires probe switch.
 uint8_t mc_probe_cycle(float *target, plan_line_data_t *pl_data, uint8_t parser_flags);
 

@@ -133,6 +133,48 @@ uint8_t system_execute_line(char *line)
       if(line[2] != '=') { return(STATUS_INVALID_STATEMENT); }
       return(gc_execute_line(line)); // NOTE: $J= is ignored inside g-code parser and used to detect jog motions.
       break;
+    case 'T' : { // FIXED7 automatic limit escape: $T<axis><+|->, e.g. $TX- ("X pressed,
+      // escaping toward negative"). The axis and direction are REQUIRED and DECLARED by
+      // the operator - the only party who can see which end is pressed, since
+      // LIMITS_TWO_SWITCHES_ON_AXES shares one input per axis. The firmware then performs
+      // the whole escape by itself as a homing-style system motion: creep away at $24 up
+      // to LIMIT_RECOVERY_MAX_TRAVEL until the input releases, then pull off $27 at $25.
+      // No host jog is involved, so host-side bugs (e.g. Candle's sign-flipped continuous
+      // jog) cannot move the machine. Bare $T is rejected: error:3.
+      if (!(sys.state == STATE_IDLE || sys.state == STATE_ALARM)) { return(STATUS_IDLE_ERROR); }
+      if (!settings.limit_motion_protection) {
+        return(STATUS_SETTING_DISABLED); // error:5 - $T is unavailable when $28=0
+      }
+      if (system_check_safety_door_ajar()) { return(STATUS_CHECK_DOOR); }
+      uint8_t escape_axis;
+      switch (line[2]) {
+        case 'X': escape_axis = X_AXIS; break;
+        case 'Y': escape_axis = Y_AXIS; break;
+        case 'Z': escape_axis = Z_AXIS; break;
+        default: return(STATUS_INVALID_STATEMENT); // bare $T or unknown axis: error:3
+      }
+      uint8_t escape_negative;
+      if (line[3] == '-') { escape_negative = true; }
+      else if (line[3] == '+') { escape_negative = false; }
+      else { return(STATUS_INVALID_STATEMENT); }
+      if (line[4] != 0) { return(STATUS_INVALID_STATEMENT); }
+      if (bit_isfalse(limits_get_state(),bit(escape_axis))) {
+        // The declared axis has no active limit input: nothing to escape from. The machine
+        // stays locked if any OTHER axis is pressed ($TX cannot unlock a machine held by Y).
+        report_feedback_message(MESSAGE_DISABLED);
+        break;
+      }
+      uint8_t entry_state = sys.state;
+      sys.state = STATE_HOMING; // Homing-style special motion (stepper axis-lock machinery).
+      uint8_t escape_status = mc_limit_escape(escape_axis, escape_negative);
+      if (sys.abort) { return(escape_status); } // Reset during escape: alarm already set.
+      sys.state = entry_state; // IDLE stays IDLE; a pre-existing ALARM stays ALARM.
+      st_go_idle();
+      if (escape_status != STATUS_OK) {
+        report_feedback_message(MESSAGE_CHECK_LIMITS); // budget used up, input still active
+        return(escape_status);
+      }
+      break; }
     case '$': case 'G': case 'C': case 'X':
       if ( line[2] != 0 ) { return(STATUS_INVALID_STATEMENT); }
       switch( line[1] ) {
@@ -179,6 +221,13 @@ uint8_t system_execute_line(char *line)
         case 'H' : // Perform homing cycle [IDLE/ALARM]
           if (bit_isfalse(settings.flags,BITFLAG_HOMING_ENABLE)) {return(STATUS_SETTING_DISABLED); }
           if (system_check_safety_door_ajar()) { return(STATUS_CHECK_DOOR); } // Block if safety door is ajar.
+          // Fork-added homing interlock ($28): with a pressed switch, run the $T<axis><dir>
+          // escape first, then home. The stock homing routine would also abort by itself
+          // (LIMITS_TWO_SWITCHES_ON_AXES) if a limit input stays pressed.
+          if (limit_protection_active() && limits_get_state()) {
+            report_feedback_message(MESSAGE_CHECK_LIMITS);
+            return(STATUS_TRAVEL_EXCEEDED);
+          }
           sys.state = STATE_HOMING; // Set system state variable
           if (line[2] == 0) {
             mc_homing_cycle(HOMING_CYCLE_ALL);
@@ -333,6 +382,9 @@ void system_convert_array_steps_to_mpos(float *position, int32_t *steps)
 // Checks and reports if target array exceeds machine travel limits.
 uint8_t system_check_travel_limits(float *target)
 {
+  // FIXED7: no fork-added bypass here anymore - $20 soft limits are fully stock. The $T
+  // escape runs as a planner-direct system motion (like homing), which never goes
+  // through this check, so it needs no exception.
   uint8_t idx;
   for (idx=0; idx<N_AXIS; idx++) {
     #ifdef HOMING_FORCE_SET_ORIGIN

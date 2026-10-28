@@ -135,8 +135,6 @@ typedef struct {
   #ifdef ENABLE_DUAL_AXIS
     uint8_t homing_axis_lock_dual;
   #endif
-  uint8_t limit_trip_dir;      // ALOE PATCH: Per-axis direction bits of the motion that tripped a hard limit (bit set = negative).
-  uint8_t limit_trip_mask;     // ALOE PATCH: Axis bits for which limit_trip_dir is valid (latched axes only).
   uint8_t f_override;          // Feed rate override value in percent
   uint8_t r_override;          // Rapids override value in percent
   uint8_t spindle_speed_ovr;   // Spindle speed value in percent
@@ -199,6 +197,19 @@ void system_convert_array_steps_to_mpos(float *position, int32_t *steps);
 
 // Checks and reports if target array exceeds machine travel limits.
 uint8_t system_check_travel_limits(float *target);
+
+// ALOE PATCH (FIXED7): Effective state of the fork-added limit protection.
+// $28 (settings.limit_motion_protection) is the persistent master switch stored in
+// EEPROM. While it is on, any active limit input locks ALL axes in both directions
+// (jog -> error:15, g-code clamped, $H refused). There is NO unlock flag anymore:
+// the ONLY way to move off a pressed switch is the synchronous escape command
+// $T<axis><+|-> (e.g. $TX-), which performs a homing-style system motion entirely
+// inside the firmware - creep away at $24 up to LIMIT_RECOVERY_MAX_TRAVEL until the
+// input releases, then pull off $27 at $25. The direction is DECLARED by the operator,
+// never guessed from pins, DIR levels or $23: with LIMITS_TWO_SWITCHES_ON_AXES both
+// ends of an axis share one input, so the firmware cannot know which end is pressed.
+// When $28=0 the firmware behaves exactly like stock Grbl and $T returns error:5.
+#define limit_protection_active() (settings.limit_motion_protection)
 
 // Special handlers for setting and clearing Grbl's real-time execution flags.
 void system_set_exec_state_flag(uint8_t mask);

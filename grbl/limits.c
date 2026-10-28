@@ -91,6 +91,8 @@ uint8_t limits_get_state()
       if (pin & (1<<DUAL_LIMIT_BIT)) { limit_state |= (1 << N_AXIS); }
     #endif
   }
+  // FIXED7: stock-shaped again. The $T escape is a synchronous command with no
+  // persistent unlock flag, so there is nothing to auto-clear here anymore.
   return(limit_state);
 }
 
@@ -118,29 +120,13 @@ uint8_t limits_get_state()
       if (!(sys_rt_exec_alarm)) {
         #ifdef HARD_LIMIT_FORCE_STATE_CHECK
           // Check limit pin state.
-          {
-            // ALOE PATCH: Latch the direction of the motion that tripped the switch, so
-            // mc_line()/jog_execute() block motion toward the switch after an alarm unlock.
-            // Valid only for the axis (axes) that actually tripped. If another axis is already
-            // pressed and latched, preserve its latched direction and only update newly tripped
-            // axes. If the switch was closed without motion (by hand, at standstill), any
-            // previous latch for that axis is dropped so the guards fall back to the $23 homing
-            // side for it.
-            uint8_t limit_state = limits_get_state();
-            sys.limit_trip_mask &= limit_state;
-            if (limit_state) {
-              uint8_t trip_direction;
-              if (st_get_exec_direction(&trip_direction)) {
-                uint8_t new_trip = limit_state & ~sys.limit_trip_mask;
-                if (!new_trip) { new_trip = limit_state; }
-                sys.limit_trip_dir = (sys.limit_trip_dir & ~new_trip) | (trip_direction & new_trip);
-                sys.limit_trip_mask = limit_state;
-              } else {
-                sys.limit_trip_mask &= ~limit_state;
-              }
-              mc_reset(); // Initiate system kill.
-              system_set_exec_alarm(EXEC_ALARM_HARD_LIMIT); // Indicate hard limit critical event
-            }
+          // ALOE PATCH: stock Grbl behavior is preserved here. The fork-added protection does
+          // not latch any direction: while $28=1 and no $T recovery is active, an active limit
+          // input simply locks ALL motion (see jog.c/mc_line). This removes any possibility of
+          // recording a bogus trip direction from a stationary axis' stale direction pin.
+          if (limits_get_state()) {
+            mc_reset(); // Initiate system kill.
+            system_set_exec_alarm(EXEC_ALARM_HARD_LIMIT); // Indicate hard limit critical event
           }
         #else
           mc_reset(); // Initiate system kill.
@@ -158,23 +144,11 @@ uint8_t limits_get_state()
     if (sys.state != STATE_ALARM) {  // Ignore if already in alarm state. 
       if (!(sys_rt_exec_alarm)) {
         // Check limit pin state.
-        {
-          // ALOE PATCH: Latch the trip direction (see the limit pin change ISR above).
-          uint8_t limit_state = limits_get_state();
-          sys.limit_trip_mask &= limit_state;
-          if (limit_state) {
-            uint8_t trip_direction;
-            if (st_get_exec_direction(&trip_direction)) {
-              uint8_t new_trip = limit_state & ~sys.limit_trip_mask;
-              if (!new_trip) { new_trip = limit_state; }
-              sys.limit_trip_dir = (sys.limit_trip_dir & ~new_trip) | (trip_direction & new_trip);
-              sys.limit_trip_mask = limit_state;
-            } else {
-              sys.limit_trip_mask &= ~limit_state;
-            }
-            mc_reset(); // Initiate system kill.
-            system_set_exec_alarm(EXEC_ALARM_HARD_LIMIT); // Indicate hard limit critical event
-          }
+        // ALOE PATCH: stock Grbl behavior. $T recovery auto-clears inside limits_get_state()
+        // as soon as all limit inputs are released; no direction latching is performed.
+        if (limits_get_state()) {
+          mc_reset(); // Initiate system kill.
+          system_set_exec_alarm(EXEC_ALARM_HARD_LIMIT); // Indicate hard limit critical event
         }
       }  
     }
@@ -441,6 +415,106 @@ void limits_go_home(uint8_t cycle_mask)
 
 // Performs a soft limit check. Called from mc_line() only. Assumes the machine has been homed,
 // the workspace volume is in all negative space, and the system is in normal operation.
+// FIXED7: automatic limit escape for $T<axis><+|->, modeled on limits_go_home().
+// Phase 1 creeps away from the switch in the operator-declared direction at the homing
+// feed rate ($24), watching the declared axis input every loop pass, for at most
+// LIMIT_RECOVERY_MAX_TRAVEL mm. Phase 2 pulls a further $27 off the released switch at
+// the homing seek rate ($25), exactly like the homing pull-off. Runs as a planner-direct
+// system motion in STATE_HOMING with hard-limit interrupts disabled by the caller.
+// Returns true when the declared axis input is inactive after the pull-off.
+// NOTE: The declared direction is the operator's statement. If it is wrong, the motion
+// presses further INTO the switch and stops after the budget with the input still
+// active (overtravel of a standard limit switch exceeds the default 10 mm budget is NOT
+// assumed - keep LIMIT_RECOVERY_MAX_TRAVEL within your switches' overtravel margin).
+uint8_t limits_escape(uint8_t axis, uint8_t negative)
+{
+  if (sys.abort) { return(false); }
+
+  // Initialize plan data struct for the escape motion. Spindle and coolant disabled.
+  plan_line_data_t plan_data;
+  plan_line_data_t *pl_data = &plan_data;
+  memset(pl_data,0,sizeof(plan_line_data_t));
+  pl_data->condition = (PL_COND_FLAG_SYSTEM_MOTION|PL_COND_FLAG_NO_FEED_OVERRIDE);
+  #ifdef USE_LINE_NUMBERS
+    pl_data->line_number = HOMING_CYCLE_LINE_NUMBER;
+  #endif
+
+  float target[N_AXIS];
+  float dir = negative ? -1.0 : 1.0;
+  uint8_t released = false;
+
+  // ---- Phase 1: creep toward the declared free side until the input releases ----
+  system_convert_array_steps_to_mpos(target, sys_position);
+  target[axis] += dir*LIMIT_RECOVERY_MAX_TRAVEL;
+  pl_data->feed_rate = settings.homing_feed_rate; // $24: slow, precise release detection.
+  plan_buffer_line(target, pl_data); // Bypass mc_line(): plan the system motion directly.
+  sys.homing_axis_lock = get_step_pin_mask(axis); // Stepper ISR masks steps in STATE_HOMING.
+  sys.step_control = STEP_CONTROL_EXECUTE_SYS_MOTION;
+  st_prep_buffer();
+  st_wake_up();
+  do {
+    // The moment the declared input reads inactive, the search is over.
+    if (bit_isfalse(limits_get_state(),bit(axis))) { released = true; }
+    st_prep_buffer();
+    // Exit routines, homing-style: no protocol_execute_realtime() in this loop.
+    if (sys_rt_exec_state & (EXEC_SAFETY_DOOR | EXEC_RESET | EXEC_CYCLE_STOP)) {
+      uint8_t rt_exec = sys_rt_exec_state;
+      if (rt_exec & EXEC_RESET) { system_set_exec_alarm(EXEC_ALARM_HOMING_FAIL_RESET); }
+      if (rt_exec & EXEC_SAFETY_DOOR) { system_set_exec_alarm(EXEC_ALARM_HOMING_FAIL_DOOR); }
+      if (sys_rt_exec_alarm) {
+        mc_reset();
+        protocol_execute_realtime();
+        return(false);
+      }
+      // EXEC_CYCLE_STOP: the whole LIMIT_RECOVERY_MAX_TRAVEL budget ran out.
+      system_clear_exec_state_flag(EXEC_CYCLE_STOP);
+      break;
+    }
+  } while (!released);
+
+  st_reset(); // Kill remaining buffered steps immediately (safe at $24 creep speed).
+  delay_ms(settings.homing_debounce_delay); // $26: let switch contacts settle.
+
+  // Re-read after the debounce delay: a bounce may have faked the release.
+  if (!released || bit_istrue(limits_get_state(),bit(axis))) {
+    sys.step_control = STEP_CONTROL_NORMAL_OP;
+    return(false); // Budget used up or still pressed: operator decides ($T again or check wiring).
+  }
+
+  // ---- Phase 2: pull a further $27 off the released switch, homing pull-off style ----
+  system_convert_array_steps_to_mpos(target, sys_position);
+  target[axis] += dir*settings.homing_pulloff;
+  pl_data->feed_rate = settings.homing_seek_rate; // $25, same rate homing uses to pull off.
+  plan_buffer_line(target, pl_data);
+  sys.homing_axis_lock = get_step_pin_mask(axis);
+  sys.step_control = STEP_CONTROL_EXECUTE_SYS_MOTION;
+  st_prep_buffer();
+  st_wake_up();
+  for (;;) {
+    st_prep_buffer();
+    if (sys_rt_exec_state & (EXEC_SAFETY_DOOR | EXEC_RESET | EXEC_CYCLE_STOP)) {
+      uint8_t rt_exec = sys_rt_exec_state;
+      if (rt_exec & EXEC_RESET) { system_set_exec_alarm(EXEC_ALARM_HOMING_FAIL_RESET); }
+      if (rt_exec & EXEC_SAFETY_DOOR) { system_set_exec_alarm(EXEC_ALARM_HOMING_FAIL_DOOR); }
+      if (sys_rt_exec_alarm) {
+        mc_reset();
+        protocol_execute_realtime();
+        return(false);
+      }
+      system_clear_exec_state_flag(EXEC_CYCLE_STOP); // Pull-off motion complete.
+      break;
+    }
+  }
+
+  st_reset();
+  delay_ms(settings.homing_debounce_delay);
+  sys.step_control = STEP_CONTROL_NORMAL_OP; // Return step control to normal operation.
+
+  // Success means the declared input is actually free after the pull-off.
+  return(bit_isfalse(limits_get_state(),bit(axis)));
+}
+
+
 // NOTE: Used by jogging to limit travel within soft-limit volume.
 void limits_soft_check(float *target)
 {
