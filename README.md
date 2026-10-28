@@ -1,81 +1,140 @@
 ![GitHub Logo](https://github.com/gnea/gnea-Media/blob/master/Grbl%20Logo/Grbl%20Logo%20250px.png?raw=true)
 
+# Grbl 1.1h — fork with limit switch protection (`$28`) and in-firmware limit escape (`$T`)
 
-В этой версии исправлена ошибка с концевыми выключателями , теперь они работают правильно
+[Русская версия](README.ru.md)
 
+A fork of [gnea/grbl](https://github.com/gnea/grbl) v1.1h for the Arduino 328p
+(Uno/Nano) that fixes the weakest spot of stock GRBL: **what happens when a
+limit switch is already pressed**. Stock GRBL leaves you with a machine that
+either refuses to move or lets the host jog it *further into* the switch.
+This fork locks the machine down and then drives off the switch **entirely
+inside the firmware** — no host jogging involved.
 
-Grbl is a no-compromise, high performance, low cost alternative to parallel-port-based motion control for CNC milling. This version of Grbl runs on an Arduino with a 328p processor (Uno, Duemilanove, Nano, Micro, etc).
+Build tag: **`20261027_ALOE_FIXED7`** (visible in the `$I` response).
 
-The controller is written in highly optimized C utilizing every clever feature of the AVR-chips to achieve precise timing and asynchronous operation. It is able to maintain up to 30kHz of stable, jitter free control pulses.
+## What's different from stock
 
-It accepts standards-compliant g-code and has been tested with the output of several CAM tools with no problems. Arcs, circles and helical motion are fully supported, as well as, all other primary g-code commands. Macro functions, variables, and most canned cycles are not supported, but we think GUIs can do a much better job at translating them into straight g-code anyhow.
+### `$28` — limit motion protection (new setting, default `1`)
 
-Grbl includes full acceleration management with look ahead. That means the controller will look up to 16 motions into the future and plan its velocities ahead to deliver smooth acceleration and jerk-free cornering.
+While **any** limit input is active, all motion is locked on **all axes in
+both directions**:
 
-* [Licensing](https://github.com/gnea/grbl/wiki/Licensing): Grbl is free software, released under the GPLv3 license.
+* jog commands return `error:15`;
+* regular g-code motion is clamped to the current position;
+* homing `$H` is refused (it would slam a pressed switch with
+  `LIMITS_TWO_SWITCHES_ON_AXES`).
 
-* For more information and help, check out our **[Wiki pages!](https://github.com/gnea/grbl/wiki)** If you find that the information is out-dated, please to help us keep it updated by editing it or notifying our community! Thanks!
+The lock is **stateless** — a pure function of the pins, with no flags or
+latched state. The moment every switch is released, the machine is unlocked.
+The firmware never guesses which end of an axis is pressed (with two switches
+per input it physically cannot know).
 
-* Lead Developer: Sungeun "Sonny" Jeon, Ph.D. (USA) aka @chamnit
+`$28=0` returns the firmware to fully stock behavior (`$T` then answers
+`error:5`).
 
-* Built on the wonderful Grbl v0.6 (2011) firmware written by Simen Svale Skogsrud (Norway).
+### `$T<axis><dir>` — automatic limit escape (new command)
 
-***
-
-### Official Supporters of the Grbl CNC Project
-![Official Supporters](https://github.com/gnea/gnea-Media/blob/master/Contributors.png?raw=true)
-
-
-***
-
-## Update Summary for v1.1
-- **IMPORTANT:** Your EEPROM will be wiped and restored with new settings. This is due to the addition of two new spindle speed '$' settings.
-
-- **Real-time Overrides** : Alters the machine running state immediately with feed, rapid, spindle speed, spindle stop, and coolant toggle controls. This awesome new feature is common only on industrial machines, often used to optimize speeds and feeds while a job is running. Most hobby CNC's try to mimic this behavior, but usually have large amounts of lag. Grbl executes overrides in realtime and within tens of milliseconds.
-
-- **Jogging Mode** : The new jogging commands are independent of the g-code parser, so that the parser state doesn't get altered and cause a potential crash if not restored properly. Documentation is included on how this works and how it can be used to control your machine via a joystick or rotary dial with a low-latency, satisfying response.
-
-- **Laser Mode** : The new "laser" mode will cause Grbl to move continuously through consecutive G1, G2, and G3 commands with spindle speed changes. When "laser" mode is disabled, Grbl will instead come to a stop to ensure a spindle comes up to speed properly. Spindle speed overrides also work with laser mode so you can tweak the laser power, if you need to during the job. Switch between "laser" mode and "normal" mode via a `$` setting.
-
-	- **Dynamic Laser Power Scaling with Speed** : If your machine has low accelerations, Grbl will automagically scale the laser power based on how fast Grbl is traveling, so you won't have burnt corners when your CNC has to make a turn! Enabled by the `M4` spindle CCW command when laser mode is enabled!
-
-- **Sleep Mode** : Grbl may now be put to "sleep" via a `$SLP` command. This will disable everything, including the stepper drivers. Nice to have when you are leaving your machine unattended and want to power down everything automatically. Only a reset exits the sleep state.
-
-- **Significant Interface Improvements**: Tweaked to increase overall performance, include lots more real-time data, and to simplify maintaining and writing GUIs. Based on direct feedback from multiple GUI developers and bench performance testing. _NOTE: GUIs need to specifically update their code to be compatible with v1.1 and later._
-
-	- **New Status Reports**: To account for the additional override data, status reports have been tweaked to cram more data into it, while still being smaller than before. Documentation is included, outlining how it has been changed. 
-	- **Improved Error/Alarm Feedback** : All Grbl error and alarm messages have been changed to providing a code. Each code is associated with a specific problem, so users will know exactly what is wrong without having to guess. Documentation and an easy to parse CSV is included in the repo.
-	- **Extended-ASCII realtime commands** : All overrides and future real-time commands are defined in the extended-ASCII character space. Unfortunately not easily type-able on a keyboard, but helps prevent accidental commands from a g-code file having these characters and gives lots of space for future expansion.
-	- **Message Prefixes** : Every message type from Grbl has a unique prefix to help GUIs immediately determine what the message is and parse it accordingly without having to know context. The prior interface had several instances of GUIs having to figure out the meaning of a message, which made everything more complicated than it needed to be.
-
-- New OEM specific features, such as safety door parking, single configuration file build option, EEPROM restrictions and restoring controls, and storing product data information.
- 
-- New safety door parking motion as a compile-option. Grbl will retract, disable the spindle/coolant, and park near Z max. When resumed, it will perform these task in reverse order and continue the program. Highly configurable, even to add more than one parking motion. See config.h for details.
-
-- New '$' Grbl settings for max and min spindle rpm. Allows for tweaking the PWM output to more closely match true spindle rpm. When max rpm is set to zero or less than min rpm, the PWM pin D11 will act like a simple enable on/off output.
-
-- Updated G28 and G30 behavior from NIST to LinuxCNC g-code description. In short, if a intermediate motion is specified, only the axes specified will move to the stored coordinates, not all axes as before.
-
-- Lots of minor bug fixes and refactoring to make the code more efficient and flexible.
-
-- **NOTE:** Arduino Mega2560 support has been moved to an active, official Grbl-Mega [project](http://www.github.com/gnea/grbl-Mega/). All new developments here and there will be synced when it makes sense to.
-
+The operator declares which axis is pressed and which way is free — the only
+thing the firmware cannot know — and the firmware does the rest by itself as
+a homing-style system motion (planner-direct, `STATE_HOMING`, limit
+interrupts disabled for the duration, exactly like `$H`):
 
 ```
-List of Supported G-Codes in Grbl v1.1:
-  - Non-Modal Commands: G4, G10L2, G10L20, G28, G30, G28.1, G30.1, G53, G92, G92.1
-  - Motion Modes: G0, G1, G2, G3, G38.2, G38.3, G38.4, G38.5, G80
-  - Feed Rate Modes: G93, G94
-  - Unit Modes: G20, G21
-  - Distance Modes: G90, G91
-  - Arc IJK Distance Modes: G91.1
-  - Plane Select Modes: G17, G18, G19
-  - Tool Length Offset Modes: G43.1, G49
-  - Cutter Compensation Modes: G40
-  - Coordinate System Modes: G54, G55, G56, G57, G58, G59
-  - Control Modes: G61
-  - Program Flow: M0, M1, M2, M30*
-  - Coolant Control: M7*, M8, M9
-  - Spindle Control: M3, M4, M5
-  - Valid Non-Command Words: F, I, J, K, L, N, P, R, S, T, X, Y, Z
+$TX-   "X is pressed, escape toward negative"
+$TX+ / $TY- / $TY+ / $TZ- / $TZ+
 ```
+
+1. **Creep** in the declared direction at the homing feed rate `$24`,
+   polling the axis input every cycle, up to `LIMIT_RECOVERY_MAX_TRAVEL`
+   (10 mm, `config.h`).
+2. **Stop + debounce**: instant stepper stop on release, `$26` ms settle
+   delay, then the input is re-read — a bounce-faked "release" fails the
+   command honestly instead of blindly pulling off.
+3. **Pull-off** a further `$27` mm at the homing seek rate `$25`.
+4. **Verdict**: input free → `ok`; budget exhausted or still pressed (wrong
+   declared direction, wiring, jammed switch) → `error:15` +
+   `[MSG:Check limits]`. Travel is hard-capped by the budget — the axis
+   cannot run away.
+
+Accepted from **Idle and Alarm** (like `$H`). Reset / safety door during the
+escape abort it exactly like homing (`ALARM:6` / `ALARM:7`). The status
+report shows `Home` while the escape runs.
+
+### Why in-firmware escape matters
+
+The incident that triggered this fork: a host-side jog bug (Candle computes
+continuous-jog distances from a cached `$20` soft-limit state; at the border
+the distance goes negative and an **X+ button press is sent as `X-1.005`**).
+Any recovery scheme that relies on host jogging inherits every host bug.
+`$T` performs the whole move itself, so a sign-flipped host command simply
+has nowhere to land: while the switch is pressed the machine is locked, and
+during the escape the host is not involved at all.
+
+### Hard-limit ISR hardening
+
+`HARD_LIMIT_FORCE_STATE_CHECK` is enabled: on a limit pin edge the ISR
+re-reads the actual pin state and raises `ALARM:1` only if a switch is
+really active — no false alarms on the *release* edge of a switch.
+(`ENABLE_SOFTWARE_DEBOUNCE` is unchanged from stock and disabled.)
+
+## Recovery workflow
+
+```
+<hit a switch, ALARM:1>
+$X          (or send $T straight from Alarm)
+$TX+        escape the pressed X switch toward positive
+$H          re-home: position after any limit event is untrusted
+```
+
+## Reference
+
+| Command / situation | Response |
+|---|---|
+| `$TX+` … `$TZ-`, escape succeeds | `ok` |
+| budget used up / input still active | `error:15` + `[MSG:Check limits]` (repeatable) |
+| bare `$T`, unknown axis, missing sign | `error:3` |
+| `$T...` while `$28=0` | `error:5` |
+| declared axis is not pressed | `[MSG:Disabled]` + `ok`, no motion (`$TX` cannot unlock a machine held by Y) |
+| `$T...` while running / jogging | `error:9` |
+| safety door ajar | `error:12` |
+
+Settings used by the escape (all standard, nothing hardcoded):
+
+| Setting | Role in `$T` |
+|---|---|
+| `$24` homing feed | creep speed of the release search |
+| `$25` homing seek | pull-off speed |
+| `$26` debounce, ms | settle delay before the release is trusted |
+| `$27` pull-off, mm | distance driven off the released switch |
+| `LIMIT_RECOVERY_MAX_TRAVEL` | search budget, 10 mm, `config.h` |
+
+Keep the 10 mm budget within the mechanical overtravel of your switches.
+
+## Companion Candle plugin
+
+[candle-plugin-limit-monitor](https://github.com/Dzantemir/candle-plugin-limit-monitor) —
+a Candle panel that shows the live `Pn:` pin state per axis, warns when a
+switch is pressed and offers one-click `$TX±` escape buttons (enabled in
+Idle/Alarm only; harmless `error:3` on stock GRBL).
+
+## Building
+
+Standard GRBL build: `make` with avr-gcc for `atmega328p` @ 16 MHz, or flash
+the prebuilt hex from the releases. Flash usage: **32,188 / 32,256 bytes** —
+the image is nearly full; enabling extra `config.h` options (e.g.
+`ENABLE_SOFTWARE_DEBOUNCE`, +~70 bytes) will not fit without trimming
+something else. The protection/escape logic is additionally covered by
+host-side unit tests (`tests/`, plain gcc, no hardware needed).
+
+## Upstream, license, credits
+
+Everything else is unmodified GRBL v1.1h: a no-compromise, high performance,
+low cost motion controller for CNC milling, written in highly optimized C,
+up to 30 kHz of stable, jitter-free step pulses.
+
+* Docs: the official **[GRBL wiki](https://github.com/gnea/grbl/wiki)**
+* Upstream: [gnea/grbl](https://github.com/gnea/grbl), lead developer
+  Sungeun "Sonny" Jeon, Ph.D. (@chamnit), built on Grbl v0.6 by
+  Simen Svale Skogsrud
+* License: **GPLv3**, same as upstream — see [COPYING](COPYING)
