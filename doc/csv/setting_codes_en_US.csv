@@ -18,6 +18,7 @@
 "25","Homing search seek rate","mm/min","Seek rate to quickly find the limit switch before the slower locating phase."
 "26","Homing switch debounce delay","milliseconds","Sets a short delay between phases of homing cycle to let a switch debounce."
 "27","Homing switch pull-off distance","millimeters","Retract distance after triggering switch to disengage it. Homing will fail if switch isn't cleared."
+"28","Limit protection","boolean","Locks all motion while any limit switch input is active. Escape with $T<axis><+|->. 0 = stock behavior."
 "30","Maximum spindle speed","RPM","Maximum spindle speed. Sets PWM to 100% duty cycle."
 "31","Minimum spindle speed","RPM","Minimum spindle speed. Sets PWM to 0.4% or lowest duty cycle."
 "32","Laser-mode enable","boolean","Enables laser mode. Consecutive G1/2/3 commands will not halt when spindle speed is changed."

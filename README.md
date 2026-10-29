@@ -11,7 +11,7 @@ either refuses to move or lets the host jog it *further into* the switch.
 This fork locks the machine down and then drives off the switch **entirely
 inside the firmware** — no host jogging involved.
 
-Build tag: **`20261027_ALOE_FIXED7`** (visible in the `$I` response).
+Build tag: **`20261029_ALOE_FIXED8`** (visible in the `$I` response).
 
 ## What's different from stock
 
@@ -21,7 +21,9 @@ While **any** limit input is active, all motion is locked on **all axes in
 both directions**:
 
 * jog commands return `error:15`;
-* regular g-code motion is clamped to the current position;
+* a regular g-code motion attempt triggers a controlled stop (feed hold
+  first when a program is streaming) followed by `ALARM:1` — lines are never
+  silently acked without motion;
 * homing `$H` is refused (it would slam a pressed switch with
   `LIMITS_TWO_SWITCHES_ON_AXES`).
 
@@ -32,6 +34,11 @@ per input it physically cannot know).
 
 `$28=0` returns the firmware to fully stock behavior (`$T` then answers
 `error:5`).
+
+**`$28` is not a substitute for `$21`.** The lock gates *new* motion at
+planning time; motion already in the planner buffer keeps executing and is
+stopped only by the hard-limit interrupt. Run the machine with `$21=1`;
+`$28` adds the pressed-switch lockout and the `$T` recovery on top of it.
 
 ### `$T<axis><dir>` — automatic limit escape (new command)
 
@@ -54,8 +61,13 @@ $TX+ / $TY- / $TY+ / $TZ- / $TZ+
 3. **Pull-off** a further `$27` mm at the homing seek rate `$25`.
 4. **Verdict**: input free → `ok`; budget exhausted or still pressed (wrong
    declared direction, wiring, jammed switch) → `error:15` +
-   `[MSG:Check limits]`. Travel is hard-capped by the budget — the axis
-   cannot run away.
+   `[MSG:Check limits]`.
+
+The 10 mm budget caps the **search phase**: on failure (including a wrongly
+declared direction) the axis stops within 10 mm — it cannot run away. On
+success the total travel is the release distance **plus `$27`**; the
+pull-off only runs after the debounced re-check has confirmed the switch is
+released, so it always moves away from a free switch.
 
 Accepted from **Idle and Alarm** (like `$H`). Reset / safety door during the
 escape abort it exactly like homing (`ALARM:6` / `ALARM:7`). The status
@@ -80,11 +92,22 @@ really active — no false alarms on the *release* edge of a switch.
 
 ## Recovery workflow
 
+Switch pressed, **no alarm** (noticed in Idle; jog answers `error:15`):
+
 ```
-<hit a switch, ALARM:1>
-$X          (or send $T straight from Alarm)
 $TX+        escape the pressed X switch toward positive
 $H          re-home: position after any limit event is untrusted
+```
+
+**Hard-limit trip (`ALARM:1`)**: stock GRBL enters its critical lock and
+ignores line commands until a realtime reset — `$X`/`$T` sent before the
+reset are discarded (upstream behavior):
+
+```
+Ctrl-X      realtime reset (0x18) — the only exit from the critical lock
+$TX+        after reset the firmware boots into Alarm (homing enabled,
+            $22=1); $T is accepted straight from Alarm, $X not required
+$H
 ```
 
 ## Reference
@@ -96,8 +119,8 @@ $H          re-home: position after any limit event is untrusted
 | bare `$T`, unknown axis, missing sign | `error:3` |
 | `$T...` while `$28=0` | `error:5` |
 | declared axis is not pressed | `[MSG:Disabled]` + `ok`, no motion (`$TX` cannot unlock a machine held by Y) |
-| `$T...` while running / jogging | `error:9` |
-| safety door ajar | `error:12` |
+| `$T...` while running / jogging | `error:8` |
+| safety door ajar | `error:13` |
 
 Settings used by the escape (all standard, nothing hardcoded):
 
@@ -116,7 +139,7 @@ Keep the 10 mm budget within the mechanical overtravel of your switches.
 [candle-plugin-limit-monitor](https://github.com/Dzantemir/candle-plugin-limit-monitor) —
 a Candle panel that shows the live `Pn:` pin state per axis, warns when a
 switch is pressed and offers one-click `$TX±` escape buttons (enabled in
-Idle/Alarm only; harmless `error:3` on stock GRBL).
+Idle/Alarm only; harmless `error:2` on stock GRBL).
 
 ## Building
 
