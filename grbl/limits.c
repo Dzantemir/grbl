@@ -453,8 +453,13 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
   st_prep_buffer();
   st_wake_up();
   do {
-    // The moment the declared input reads inactive, the search is over.
-    if (bit_isfalse(limits_get_state(),bit(axis))) { released = true; }
+    // The moment the declared input reads inactive, the search is over. Mask the
+    // axis out of the stepper ISR immediately (homing does the same per-axis halt):
+    // without this the segment buffer keeps stepping ~tens of ms until st_reset().
+    if (bit_isfalse(limits_get_state(),bit(axis))) {
+      released = true;
+      sys.homing_axis_lock = 0;
+    }
     st_prep_buffer();
     // Exit routines, homing-style: no protocol_execute_realtime() in this loop.
     if (sys_rt_exec_state & (EXEC_SAFETY_DOOR | EXEC_RESET | EXEC_CYCLE_STOP)) {
@@ -473,6 +478,11 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
   } while (!released);
 
   st_reset(); // Kill remaining buffered steps immediately (safe at $24 creep speed).
+  // The budget move can finish in the same window the release is detected: the stepper
+  // then raises EXEC_CYCLE_STOP after the loop has already exited via `released`. Clear
+  // the stale flag here, otherwise phase 2 would mistake it for "pull-off complete",
+  // skip the whole $27 pull-off and still report success.
+  system_clear_exec_state_flag(EXEC_CYCLE_STOP);
   delay_ms(settings.homing_debounce_delay); // $26: let switch contacts settle.
 
   // Re-read after the debounce delay: a bounce may have faked the release.
@@ -491,6 +501,16 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
   st_prep_buffer();
   st_wake_up();
   for (;;) {
+    // The input must stay released for the whole pull-off. If it re-activates
+    // (the phase-1 release was spurious, flaky wiring), stop instantly and fail -
+    // the pull-off must never ram a switch with the limit ISR disabled.
+    if (bit_istrue(limits_get_state(),bit(axis))) {
+      sys.homing_axis_lock = 0;
+      st_reset();
+      system_clear_exec_state_flag(EXEC_CYCLE_STOP);
+      sys.step_control = STEP_CONTROL_NORMAL_OP;
+      return(false);
+    }
     st_prep_buffer();
     if (sys_rt_exec_state & (EXEC_SAFETY_DOOR | EXEC_RESET | EXEC_CYCLE_STOP)) {
       uint8_t rt_exec = sys_rt_exec_state;

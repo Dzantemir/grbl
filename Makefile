@@ -55,8 +55,12 @@ OBJECTS = $(addprefix $(BUILDDIR)/,$(notdir $(SOURCE:.c=.o)))
 # symbolic targets:
 all:	grbl.hex
 
-$(BUILDDIR)/%.o: $(SOURCEDIR)/%.c
+$(BUILDDIR)/%.o: $(SOURCEDIR)/%.c | $(BUILDDIR)
 	$(COMPILE) -MMD -MP -c $< -o $@
+
+# Create the build directory on a fresh checkout (e.g. when build/ was not shipped).
+$(BUILDDIR):
+	mkdir -p $@
 
 .S.o:
 	$(COMPILE) -x assembler-with-cpp -c $< -o $(BUILDDIR)/$@

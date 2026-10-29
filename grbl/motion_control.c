@@ -41,21 +41,28 @@ void mc_line(float *target, plan_line_data_t *pl_data)
   // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
   if (sys.state == STATE_CHECK_MODE) { return; }
 
-  // ---- ALOE PATCH: optional hard-limit motion lock ($28) ----
-  // $28=0 leaves stock Grbl behavior untouched. Otherwise, if ANY limit input is active,
-  // every axis is held at its current machine position so no motion can be planned: the
-  // machine stays fully locked until the operator runs the $T<axis><dir> escape or turns
-  // $28 off. No direction is inferred or guessed.
-  if (limit_protection_active()) {
-    uint8_t limit_state = limits_get_state();
-    if (limit_state) {
-      float current_mpos[N_AXIS];
-      system_convert_array_steps_to_mpos(current_mpos, sys_position);
-      uint8_t idx;
-      for (idx=0; idx<N_AXIS; idx++) {
-        target[idx] = current_mpos[idx];
-      }
+  // ---- ALOE PATCH (FIXED8): optional hard-limit motion lock ($28) ----
+  // $28=0 leaves stock Grbl behavior untouched. Otherwise a g-code motion attempt while
+  // ANY limit input is active is handled exactly like a stock soft-limit violation:
+  // controlled stop first (feed hold when a cycle is running, so no steps are lost),
+  // then ALARM:1 and the stock critical lock. The former FIXED5-7 silent clamp acked
+  // lines with "ok" while producing no motion, and during a running program could plan
+  // short backward blocks: the clamp wrote the real-time position into the target while
+  // plan_buffer_line() measures from the planner queue tail. Jogging never reaches this
+  // point (jog.c rejects it with error:15); the $T escape plans its motion directly and
+  // bypasses mc_line() entirely. No direction is inferred or guessed here.
+  if (limit_protection_active() && limits_get_state()) {
+    if (sys.state == STATE_CYCLE) {
+      system_set_exec_state_flag(EXEC_FEED_HOLD);
+      do {
+        protocol_execute_realtime();
+        if (sys.abort) { return; }
+      } while ( sys.state != STATE_IDLE );
     }
+    mc_reset(); // Clears anything still buffered; benign when already idle.
+    system_set_exec_alarm(EXEC_ALARM_HARD_LIMIT); // ALARM:1: a limit input is active.
+    protocol_execute_realtime();
+    return;
   }
   // ---- END PATCH ----
 
