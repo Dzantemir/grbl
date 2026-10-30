@@ -40,6 +40,7 @@ const __flash settings_t defaults = {\
     .homing_debounce_delay = DEFAULT_HOMING_DEBOUNCE_DELAY,
     .homing_pulloff = DEFAULT_HOMING_PULLOFF,
     .limit_motion_protection = 1,
+    .limit_recovery_travel = LIMIT_RECOVERY_MAX_TRAVEL,
     .flags = (DEFAULT_REPORT_INCHES << BIT_REPORT_INCHES) | \
              (DEFAULT_LASER_MODE << BIT_LASER_MODE) | \
              (DEFAULT_INVERT_ST_ENABLE << BIT_INVERT_ST_ENABLE) | \
@@ -206,10 +207,37 @@ typedef struct {
   float homing_pulloff;
 } settings_v10_t;
 
-// Compile-time guard: the legacy mirror must cover exactly the bytes that precede the
-// newly appended setting (i.e. no padding/layout mismatch between the two structs).
+// Mirror of settings_t as stored in SETTINGS_VERSION 11 (v10 + the $28 byte), before the
+// $29 (limit_recovery_travel) float was appended in FIXED11. Same migration rules apply.
+typedef struct {
+  float steps_per_mm[N_AXIS];
+  float max_rate[N_AXIS];
+  float acceleration[N_AXIS];
+  float max_travel[N_AXIS];
+  uint8_t pulse_microseconds;
+  uint8_t step_invert_mask;
+  uint8_t dir_invert_mask;
+  uint8_t stepper_idle_lock_time;
+  uint8_t status_report_mask;
+  float junction_deviation;
+  float arc_tolerance;
+  float rpm_max;
+  float rpm_min;
+  uint8_t flags;
+  uint8_t homing_dir_mask;
+  float homing_feed_rate;
+  float homing_seek_rate;
+  uint16_t homing_debounce_delay;
+  float homing_pulloff;
+  uint8_t limit_motion_protection;
+} settings_v11_t;
+
+// Compile-time guards: each legacy mirror must cover exactly the bytes that precede the
+// setting appended after it (i.e. no padding/layout mismatch between the structs).
 typedef char settings_v10_layout_check[
   (sizeof(settings_v10_t) == offsetof(settings_t, limit_motion_protection)) ? 1 : -1];
+typedef char settings_v11_layout_check[
+  (sizeof(settings_v11_t) == offsetof(settings_t, limit_recovery_travel)) ? 1 : -1];
 
 // Reads Grbl global settings struct from EEPROM.
 uint8_t read_global_settings() {
@@ -220,17 +248,28 @@ uint8_t read_global_settings() {
     if (!(memcpy_from_eeprom_with_checksum((char*)&settings, EEPROM_ADDR_GLOBAL, sizeof(settings_t)))) {
       return(false);
     }
-  } else if (version == (SETTINGS_VERSION - 1)) {
-    // Migrate settings version 10 -> 11. Read the legacy record using its own size, so the
-    // checksum is fetched from the address it was actually written to. All machine settings
-    // are preserved; the new limit-direction protection ($28) is enabled by default.
+  } else if (version == 11) {
+    // Migrate 11 -> 12: the $29 float was appended. Read the legacy record using its own
+    // size, so the checksum is fetched from the address it was actually written to. All
+    // machine settings (including $28) are preserved; $29 gets the former hard-coded default.
+    settings_v11_t legacy;
+    if (!(memcpy_from_eeprom_with_checksum((char*)&legacy, EEPROM_ADDR_GLOBAL, sizeof(legacy)))) {
+      return(false);
+    }
+    memset(&settings, 0, sizeof(settings));
+    memcpy(&settings, &legacy, sizeof(legacy)); // Identical prefix layout, one float appended.
+    settings.limit_recovery_travel = LIMIT_RECOVERY_MAX_TRAVEL;
+    write_global_settings();
+  } else if (version == 10) {
+    // Migrate 10 -> 12: both the $28 byte and the $29 float are missing. Same rules.
     settings_v10_t legacy;
     if (!(memcpy_from_eeprom_with_checksum((char*)&legacy, EEPROM_ADDR_GLOBAL, sizeof(legacy)))) {
       return(false);
     }
     memset(&settings, 0, sizeof(settings));
-    memcpy(&settings, &legacy, sizeof(legacy)); // Identical prefix layout, only one byte appended.
+    memcpy(&settings, &legacy, sizeof(legacy));
     settings.limit_motion_protection = 1;
+    settings.limit_recovery_travel = LIMIT_RECOVERY_MAX_TRAVEL;
     write_global_settings();
   } else {
     return(false);
@@ -337,6 +376,11 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
       case 28:
         if ((value != 0.0) && (value != 1.0)) { return(STATUS_INVALID_STATEMENT); }
         settings.limit_motion_protection = (uint8_t)value;
+        break;
+      case 29:
+        // $T escape search budget, mm. Negative values are rejected by the global
+        // check above; 0 is allowed and disables the $T escape entirely.
+        settings.limit_recovery_travel = value;
         break;
       case 30: settings.rpm_max = value; spindle_init(); break; // Re-initialize spindle rpm calibration
       case 31: settings.rpm_min = value; spindle_init(); break; // Re-initialize spindle rpm calibration

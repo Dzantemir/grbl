@@ -51,15 +51,16 @@ uint8_t jog_execute(plan_line_data_t *pl_data, parser_block_t *gc_block)
   }
 
   if (limit_protection_active() && limit_state) {
-    float current_mpos[N_AXIS];
-    system_convert_array_steps_to_mpos(current_mpos, sys_position);
-    uint8_t idx;
-    for (idx=0; idx<N_AXIS; idx++) {
-      // Any active limit input locks every axis; no direction guessing is involved.
-      // FIXED7: there is no jog-based recovery anymore - the only way off a pressed
-      // switch is the firmware-side $T<axis><dir> escape (see system.c / limits.c).
-      if (gc_block->values.xyz[idx] != current_mpos[idx]) { return(STATUS_TRAVEL_EXCEEDED); }
-    }
+    // Any active limit input locks every axis; no direction guessing is involved.
+    // FIXED7: there is no jog-based recovery anymore - the only way off a pressed
+    // switch is the firmware-side $T<axis><dir> escape (see system.c / limits.c).
+    // FIXED10: the refusal is unconditional. The former per-axis target==current
+    // comparison let a zero-length jog ($J=X0 in G91, or $J=X<current> in G90)
+    // slip through to mc_line(), whose $28 guard then fired a full ALARM:1 for
+    // a command that moves nothing. Every jog while a switch is pressed now
+    // answers error:15, exactly as the README promises - and the fragile float
+    // comparison is gone.
+    return(STATUS_TRAVEL_EXCEEDED);
   }
   // ---- END PATCH ----
 

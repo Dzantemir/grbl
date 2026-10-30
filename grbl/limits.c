@@ -418,14 +418,14 @@ void limits_go_home(uint8_t cycle_mask)
 // FIXED7: automatic limit escape for $T<axis><+|->, modeled on limits_go_home().
 // Phase 1 creeps away from the switch in the operator-declared direction at the homing
 // feed rate ($24), watching the declared axis input every loop pass, for at most
-// LIMIT_RECOVERY_MAX_TRAVEL mm. Phase 2 pulls a further $27 off the released switch at
+// the $29 budget (default 10 mm). Phase 2 pulls a further $27 off the released switch at
 // the homing seek rate ($25), exactly like the homing pull-off. Runs as a planner-direct
 // system motion in STATE_HOMING with hard-limit interrupts disabled by the caller.
 // Returns true when the declared axis input is inactive after the pull-off.
 // NOTE: The declared direction is the operator's statement. If it is wrong, the motion
 // presses further INTO the switch and stops after the budget with the input still
 // active (overtravel of a standard limit switch exceeds the default 10 mm budget is NOT
-// assumed - keep LIMIT_RECOVERY_MAX_TRAVEL within your switches' overtravel margin).
+// assumed - keep the $29 budget within your switches' overtravel margin).
 uint8_t limits_escape(uint8_t axis, uint8_t negative)
 {
   if (sys.abort) { return(false); }
@@ -439,6 +439,9 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
     pl_data->line_number = HOMING_CYCLE_LINE_NUMBER;
   #endif
 
+  // $29=0 disables the escape: refuse before any motion state is touched.
+  if (settings.limit_recovery_travel <= 0.0) { return(false); }
+
   float target[N_AXIS];
   float dir = negative ? -1.0 : 1.0;
   uint8_t released = false;
@@ -446,7 +449,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
 
   // ---- Phase 1: creep toward the declared free side until the input releases ----
   system_convert_array_steps_to_mpos(target, sys_position);
-  target[axis] += dir*LIMIT_RECOVERY_MAX_TRAVEL;
+  target[axis] += dir*settings.limit_recovery_travel; // $29 budget (default LIMIT_RECOVERY_MAX_TRAVEL).
   pl_data->feed_rate = settings.homing_feed_rate; // $24: slow, precise release detection.
   plan_buffer_line(target, pl_data); // Bypass mc_line(): plan the system motion directly.
   sys.homing_axis_lock = get_step_pin_mask(axis); // Stepper ISR masks steps in STATE_HOMING.
@@ -481,7 +484,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
         protocol_execute_realtime();
         return(false);
       }
-      // EXEC_CYCLE_STOP: the whole LIMIT_RECOVERY_MAX_TRAVEL budget ran out.
+      // EXEC_CYCLE_STOP: the whole $29 budget ran out.
       system_clear_exec_state_flag(EXEC_CYCLE_STOP);
       break;
     }
@@ -498,6 +501,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
 
   // Re-read after the debounce delay: a bounce may have faked the release.
   if (!released || bit_istrue(limits_get_state(),bit(axis))) {
+    sys.homing_axis_lock = 0; // FIXED10 hygiene: no stale mask outside the escape.
     sys.step_control = STEP_CONTROL_NORMAL_OP;
     return(false); // Budget used up or still pressed: operator decides ($T again or check wiring).
   }
@@ -524,6 +528,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
       st_reset();
       sys_position[axis] = pos_snapshot; // Drop the masked phantom ticks.
       system_clear_exec_state_flag(EXEC_CYCLE_STOP);
+      sys.homing_axis_lock = 0; // FIXED10 hygiene.
       sys.step_control = STEP_CONTROL_NORMAL_OP;
       return(false);
     }
@@ -544,6 +549,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
 
   st_reset();
   delay_ms(settings.homing_debounce_delay);
+  sys.homing_axis_lock = 0; // FIXED10 hygiene: no stale mask outside the escape.
   sys.step_control = STEP_CONTROL_NORMAL_OP; // Return step control to normal operation.
 
   // Success means the declared input is actually free after the pull-off.

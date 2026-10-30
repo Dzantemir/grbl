@@ -204,7 +204,7 @@ uint8_t system_check_travel_limits(float *target);
 // (jog -> error:15, g-code motion -> controlled stop + ALARM:1, $H refused). There is NO unlock flag anymore:
 // the ONLY way to move off a pressed switch is the synchronous escape command
 // $T<axis><+|-> (e.g. $TX-), which performs a homing-style system motion entirely
-// inside the firmware - creep away at $24 up to LIMIT_RECOVERY_MAX_TRAVEL until the
+// inside the firmware - creep away at $24 up to the $29 budget until the
 // input releases, then pull off $27 at $25. The direction is DECLARED by the operator,
 // never guessed from pins, DIR levels or $23: with LIMITS_TWO_SWITCHES_ON_AXES both
 // ends of an axis share one input, so the firmware cannot know which end is pressed.

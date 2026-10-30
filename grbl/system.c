@@ -138,7 +138,7 @@ uint8_t system_execute_line(char *line)
       // the operator - the only party who can see which end is pressed, since
       // LIMITS_TWO_SWITCHES_ON_AXES shares one input per axis. The firmware then performs
       // the whole escape by itself as a homing-style system motion: creep away at $24 up
-      // to LIMIT_RECOVERY_MAX_TRAVEL until the input releases, then pull off $27 at $25.
+      // to the $29 budget until the input releases, then pull off $27 at $25.
       // No host jog is involved, so host-side bugs (e.g. Candle's sign-flipped continuous
       // jog) cannot move the machine. Bare $T is rejected: error:3.
       if (!(sys.state == STATE_IDLE || sys.state == STATE_ALARM)) { return(STATUS_IDLE_ERROR); }
@@ -167,7 +167,10 @@ uint8_t system_execute_line(char *line)
       uint8_t entry_state = sys.state;
       sys.state = STATE_HOMING; // Homing-style special motion (stepper axis-lock machinery).
       uint8_t escape_status = mc_limit_escape(escape_axis, escape_negative);
-      if (sys.abort) { return(escape_status); } // Reset during escape: alarm already set.
+      // Reset during escape: ALARM:6 is already reported. Return OK so the line
+      // response is "ok" - identical to what stock $H prints when a reset lands
+      // mid-homing (FIXED10; used to print a confusing trailing error:15).
+      if (sys.abort) { return(STATUS_OK); }
       sys.state = entry_state; // IDLE stays IDLE; a pre-existing ALARM stays ALARM.
       st_go_idle();
       if (escape_status != STATUS_OK) {

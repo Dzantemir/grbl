@@ -291,7 +291,7 @@ void mc_homing_cycle(uint8_t cycle_mask)
 // (system.c) has already verified $28=1, IDLE/ALARM state, a closed safety door,
 // an active limit input on the declared axis, and has set STATE_HOMING.
 // Returns STATUS_OK when the declared input released and the $27 pull-off finished,
-// STATUS_TRAVEL_EXCEEDED when the LIMIT_RECOVERY_MAX_TRAVEL budget was used up with
+// STATUS_TRAVEL_EXCEEDED when the $29 budget was used up with
 // the input still active (wrong declared direction, wiring, or a jammed switch).
 uint8_t mc_limit_escape(uint8_t axis, uint8_t negative)
 {

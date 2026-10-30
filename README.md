@@ -1,6 +1,6 @@
 ![GitHub Logo](https://github.com/gnea/gnea-Media/blob/master/Grbl%20Logo/Grbl%20Logo%20250px.png?raw=true)
 
-# Grbl 1.1h — fork with limit switch protection (`$28`) and in-firmware limit escape (`$T`)
+# Grbl 1.1h — fork with limit switch protection (`$28`/`$29`) and in-firmware limit escape (`$T`)
 
 [Русская версия](README.ru.md)
 
@@ -11,9 +11,18 @@ either refuses to move or lets the host jog it *further into* the switch.
 This fork locks the machine down and then drives off the switch **entirely
 inside the firmware** — no host jogging involved.
 
-Build tag: **`20261030_ALOE_FIXED9`** (visible in the `$I` response).
+Build tag: **`20261030_ALOE_FIXED11`** (visible in the `$I` response).
 
 ## What's different from stock
+
+### `$29` — `$T` escape budget, mm (new setting, default `10`)
+
+How far the `$T` escape may creep while searching for the switch release
+(formerly the compile-time `LIMIT_RECOVERY_MAX_TRAVEL`). Tune it to your
+switches: it should exceed the worst-case overtravel but stay within the
+mechanical margin. `$29=0` disables the `$T` escape entirely (`error:15`);
+negative values are rejected. Existing EEPROM settings migrate automatically
+(`$29` arrives as `10.0`).
 
 ### `$28` — limit motion protection (new setting, default `1`)
 
@@ -35,6 +44,11 @@ per input it physically cannot know).
 `$28=0` returns the firmware to fully stock behavior (`$T` then answers
 `error:5`).
 
+Note: this fork's `config.h` enables the stock `LIMITS_TWO_SWITCHES_ON_AXES`
+option (both ends of an axis share one input). With `$28=0` the firmware
+behaves exactly like vanilla GRBL *compiled with that same option* — e.g.
+`$H` with a pressed switch still trips the stock `ALARM:1`.
+
 **`$28` is not a substitute for `$21`.** The lock gates *new* motion at
 planning time; motion already in the planner buffer keeps executing and is
 stopped only by the hard-limit interrupt. Run the machine with `$21=1`;
@@ -53,8 +67,8 @@ $TX+ / $TY- / $TY+ / $TZ- / $TZ+
 ```
 
 1. **Creep** in the declared direction at the homing feed rate `$24`,
-   polling the axis input every cycle, up to `LIMIT_RECOVERY_MAX_TRAVEL`
-   (10 mm, `config.h`).
+   polling the axis input every cycle, up to the `$29` budget
+   (default 10 mm).
 2. **Stop + debounce**: instant stepper stop on release, `$26` ms settle
    delay, then the input is re-read — a bounce-faked "release" fails the
    command honestly instead of blindly pulling off.
@@ -63,8 +77,8 @@ $TX+ / $TY- / $TY+ / $TZ- / $TZ+
    declared direction, wiring, jammed switch) → `error:15` +
    `[MSG:Check Limits]`.
 
-The 10 mm budget caps the **search phase**: on failure (including a wrongly
-declared direction) the axis stops within 10 mm — it cannot run away. On
+The `$29` budget caps the **search phase**: on failure (including a wrongly
+declared direction) the axis stops within `$29` mm — it cannot run away. On
 success the total travel is the release distance **plus `$27`**; the
 pull-off only runs after the debounced re-check has confirmed the switch is
 released, so it always moves away from a free switch.
@@ -130,9 +144,9 @@ Settings used by the escape (all standard, nothing hardcoded):
 | `$25` homing seek | pull-off speed |
 | `$26` debounce, ms | settle delay before the release is trusted |
 | `$27` pull-off, mm | distance driven off the released switch |
-| `LIMIT_RECOVERY_MAX_TRAVEL` | search budget, 10 mm, `config.h` |
+| `$29` budget, mm | search budget (default 10, `$29=0` disables `$T`) |
 
-Keep the 10 mm budget within the mechanical overtravel of your switches.
+Keep the `$29` budget within the mechanical overtravel of your switches.
 
 ## Companion Candle plugin
 
@@ -144,11 +158,24 @@ Idle/Alarm only; harmless `error:2` on stock GRBL).
 ## Building
 
 Standard GRBL build: `make` with avr-gcc for `atmega328p` @ 16 MHz, or flash
-the prebuilt hex from the releases. Flash usage: **32,188 / 32,256 bytes** —
-the image is nearly full; enabling extra `config.h` options (e.g.
-`ENABLE_SOFTWARE_DEBOUNCE`, +~70 bytes) will not fit without trimming
-something else. The protection/escape logic is additionally covered by
-host-side unit tests (`tests/`, plain gcc, no hardware needed).
+the prebuilt hex from the releases.
+
+**Flash usage depends on the compiler.** Reference numbers for FIXED11:
+avr-gcc 7.x ≈ **31.1 KB**, avr-gcc 14.x ≈ **32 128 bytes** — both fit the
+32 256-byte application area of an Uno/Nano with the Optiboot (0.5 KB)
+bootloader. **Nano boards with the old 2 KB bootloader (30 720-byte limit)
+cannot fit this fork** — burn Optiboot ("Uno" bootloader) first or use an
+Uno. The image is nearly full either way: extra `config.h` options (e.g.
+`ENABLE_SOFTWARE_DEBOUNCE`, +~70 bytes) may not fit without trimming
+something else — always check the `avr-size` output against 32 256.
+
+Keep `$24`, `$25` and `$27` **greater than zero**: stock GRBL accepts `0`
+for these settings, but both stock homing and the `$T` escape need a real
+feed rate and a real pull-off distance ( `$27=0` silently skips the pull-off
+and leaves the carriage on the very edge of the switch).
+
+The protection/escape logic is additionally covered by host-side unit tests
+(`tests/`, plain gcc, no hardware needed).
 
 ## Upstream, license, credits
 
