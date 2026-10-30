@@ -201,7 +201,7 @@ uint8_t system_check_travel_limits(float *target);
 // ALOE PATCH (FIXED7): Effective state of the fork-added limit protection.
 // $28 (settings.limit_motion_protection) is the persistent master switch stored in
 // EEPROM. While it is on, any active limit input locks ALL axes in both directions
-// (jog -> error:15, g-code clamped, $H refused). There is NO unlock flag anymore:
+// (jog -> error:15, g-code motion -> controlled stop + ALARM:1, $H refused). There is NO unlock flag anymore:
 // the ONLY way to move off a pressed switch is the synchronous escape command
 // $T<axis><+|-> (e.g. $TX-), which performs a homing-style system motion entirely
 // inside the firmware - creep away at $24 up to LIMIT_RECOVERY_MAX_TRAVEL until the

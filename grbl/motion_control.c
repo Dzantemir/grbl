@@ -52,6 +52,14 @@ void mc_line(float *target, plan_line_data_t *pl_data)
   // point (jog.c rejects it with error:15); the $T escape plans its motion directly and
   // bypasses mc_line() entirely. No direction is inferred or guessed here.
   if (limit_protection_active() && limits_get_state()) {
+    // FIXED9: sys.soft_limit MUST be set before waiting out the feed hold, exactly like
+    // limits_soft_check() does. Without it protocol_exec_rt_system() routes EXEC_CYCLE_STOP
+    // into the "hold complete, wait for resume" branch (protocol.c): sys.state stays
+    // STATE_HOLD forever, the while-loop below never exits, and a cycle-start (~) received
+    // meanwhile would resume the buffered motion INTO the pressed switch. With the flag the
+    // completed hold is treated as "motion complete" -> STATE_IDLE -> loop exits -> ALARM:1.
+    // The flag is cleared by the stock sys-struct reset after mc_reset(), same as soft limits.
+    sys.soft_limit = true;
     if (sys.state == STATE_CYCLE) {
       system_set_exec_state_flag(EXEC_FEED_HOLD);
       do {

@@ -442,6 +442,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
   float target[N_AXIS];
   float dir = negative ? -1.0 : 1.0;
   uint8_t released = false;
+  int32_t pos_snapshot = 0; // sys_position[axis] at the instant the step mask engages.
 
   // ---- Phase 1: creep toward the declared free side until the input releases ----
   system_convert_array_steps_to_mpos(target, sys_position);
@@ -458,7 +459,16 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
     // without this the segment buffer keeps stepping ~tens of ms until st_reset().
     if (bit_isfalse(limits_get_state(),bit(axis))) {
       released = true;
+      // FIXED9: snapshot the position atomically together with engaging the mask.
+      // The stepper ISR increments sys_position BEFORE the STATE_HOMING mask strips
+      // the pulse (stepper.c), so every masked tick until st_reset() below would be
+      // counted but never moved (~1-3 phantom steps). The snapshot is written back
+      // after st_reset() so the reported position matches the physical one exactly.
+      uint8_t sreg = SREG;
+      cli();
+      pos_snapshot = sys_position[axis];
       sys.homing_axis_lock = 0;
+      SREG = sreg;
     }
     st_prep_buffer();
     // Exit routines, homing-style: no protocol_execute_realtime() in this loop.
@@ -478,6 +488,7 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
   } while (!released);
 
   st_reset(); // Kill remaining buffered steps immediately (safe at $24 creep speed).
+  if (released) { sys_position[axis] = pos_snapshot; } // FIXED9: drop the masked phantom ticks.
   // The budget move can finish in the same window the release is detected: the stepper
   // then raises EXEC_CYCLE_STOP after the loop has already exited via `released`. Clear
   // the stale flag here, otherwise phase 2 would mistake it for "pull-off complete",
@@ -505,8 +516,13 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
     // (the phase-1 release was spurious, flaky wiring), stop instantly and fail -
     // the pull-off must never ram a switch with the limit ISR disabled.
     if (bit_istrue(limits_get_state(),bit(axis))) {
+      uint8_t sreg = SREG; // FIXED9: same snapshot discipline as the phase-1 release.
+      cli();
+      pos_snapshot = sys_position[axis];
       sys.homing_axis_lock = 0;
+      SREG = sreg;
       st_reset();
+      sys_position[axis] = pos_snapshot; // Drop the masked phantom ticks.
       system_clear_exec_state_flag(EXEC_CYCLE_STOP);
       sys.step_control = STEP_CONTROL_NORMAL_OP;
       return(false);

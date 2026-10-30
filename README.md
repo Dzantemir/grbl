@@ -11,7 +11,7 @@ either refuses to move or lets the host jog it *further into* the switch.
 This fork locks the machine down and then drives off the switch **entirely
 inside the firmware** — no host jogging involved.
 
-Build tag: **`20261029_ALOE_FIXED8`** (visible in the `$I` response).
+Build tag: **`20261030_ALOE_FIXED9`** (visible in the `$I` response).
 
 ## What's different from stock
 
@@ -61,7 +61,7 @@ $TX+ / $TY- / $TY+ / $TZ- / $TZ+
 3. **Pull-off** a further `$27` mm at the homing seek rate `$25`.
 4. **Verdict**: input free → `ok`; budget exhausted or still pressed (wrong
    declared direction, wiring, jammed switch) → `error:15` +
-   `[MSG:Check limits]`.
+   `[MSG:Check Limits]`.
 
 The 10 mm budget caps the **search phase**: on failure (including a wrongly
 declared direction) the axis stops within 10 mm — it cannot run away. On
@@ -115,7 +115,7 @@ $H
 | Command / situation | Response |
 |---|---|
 | `$TX+` … `$TZ-`, escape succeeds | `ok` |
-| budget used up / input still active | `error:15` + `[MSG:Check limits]` (repeatable) |
+| budget used up / input still active | `error:15` + `[MSG:Check Limits]` (repeatable) |
 | bare `$T`, unknown axis, missing sign | `error:3` |
 | `$T...` while `$28=0` | `error:5` |
 | declared axis is not pressed | `[MSG:Disabled]` + `ok`, no motion (`$TX` cannot unlock a machine held by Y) |
