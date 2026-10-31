@@ -11,7 +11,7 @@ either refuses to move or lets the host jog it *further into* the switch.
 This fork locks the machine down and then drives off the switch **entirely
 inside the firmware** — no host jogging involved.
 
-Build tag: **`20261030_ALOE_FIXED11`** (visible in the `$I` response).
+Build tag: **`20261030_ALOE_FIXED12`** (visible in the `$I` response).
 
 ## What's different from stock
 
@@ -21,7 +21,9 @@ How far the `$T` escape may creep while searching for the switch release
 (formerly the compile-time `LIMIT_RECOVERY_MAX_TRAVEL`). Tune it to your
 switches: it should exceed the worst-case overtravel but stay within the
 mechanical margin. `$29=0` disables the `$T` escape entirely (`error:15`);
-negative values are rejected. Existing EEPROM settings migrate automatically
+negative values are rejected. At run time the budget is additionally
+clamped to the axis max travel (`$130`/`$131`/`$132`), so a typo like
+`$29=99999` cannot void the "never runs away" guarantee. Existing EEPROM settings migrate automatically
 (`$29` arrives as `10.0`).
 
 ### `$28` — limit motion protection (new setting, default `1`)
@@ -84,8 +86,11 @@ pull-off only runs after the debounced re-check has confirmed the switch is
 released, so it always moves away from a free switch.
 
 Accepted from **Idle and Alarm** (like `$H`). Reset / safety door during the
-escape abort it exactly like homing (`ALARM:6` / `ALARM:7`). The status
-report shows `Home` while the escape runs.
+escape abort it exactly like homing (`ALARM:6` / `ALARM:7`). Like stock
+homing, the firmware does **not** answer `?` status polls while the escape
+moves — hosts see a silent gap (up to tens of seconds at low `$24`); the
+companion Candle plugin shows an explicit "running $T escape..." message
+for exactly this reason.
 
 ### Why in-firmware escape matters
 
@@ -161,7 +166,7 @@ Standard GRBL build: `make` with avr-gcc for `atmega328p` @ 16 MHz, or flash
 the prebuilt hex from the releases.
 
 **Flash usage depends on the compiler.** Reference numbers for FIXED11:
-avr-gcc 7.x ≈ **31.1 KB**, avr-gcc 14.x ≈ **32 128 bytes** — both fit the
+avr-gcc 7.3 = **31 288 bytes**, avr-gcc 14.x = **32 128 bytes** — both fit the
 32 256-byte application area of an Uno/Nano with the Optiboot (0.5 KB)
 bootloader. **Nano boards with the old 2 KB bootloader (30 720-byte limit)
 cannot fit this fork** — burn Optiboot ("Uno" bootloader) first or use an

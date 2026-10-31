@@ -48,6 +48,8 @@ $24=25.000
 $25=500.000
 $26=250
 $27=1.000
+$28=1
+$29=10.000
 $30=1000.
 $31=0.
 $32=0
@@ -212,6 +214,16 @@ Whenever a switch triggers, some of them can have electrical/mechanical noise th
 #### $27 - Homing pull-off, mm
 
 To play nice with the hard limits feature, where homing can share the same limit switches, the homing cycle will move off all of the limit switches by this pull-off travel after it completes. In other words, it helps to prevent accidental triggering of the hard limit after a homing cycle.
+
+#### $28 - Fork-added limit motion lock, boolean
+
+This setting is the persistent master switch for the limit protection added by this fork. The default is `1` (enabled). With `$28=1`, as long as **any** limit input is active, new motion on **all** axes is refused in both directions: jog commands answer `error:15`, G-code motion attempts raise `ALARM:1`, and homing (`$H`) is refused until every limit input is released. The firmware deliberately does not infer which physical end of an axis is pressed and keeps no direction history, so switch bounce or two switches sharing one input can never unlock the wrong direction. The only way off a pressed switch is the `$T<axis><+|->` escape command: the operator declares the axis and the free direction, and the firmware itself creeps off the switch at `$24`, debounces with `$26`, then pulls off `$27` at `$25` — the host sends no motion commands at all (see `$29` for the travel budget).
+
+Set `$28=0` to disable these fork-added behaviors and restore stock Grbl motion/homing behavior; the `$T` command is then rejected with `error:5`. This does **not** disable standard Grbl protections such as hard-limit alarms (`$21`), soft limits (`$20`), the normal homing cycle (`$22`), or safety-door handling. `$28` is stored in EEPROM; settings records from older firmware are migrated automatically with `$28=1` while preserving all prior machine settings.
+
+#### $29 - Fork-added $T escape travel budget, mm
+
+The maximum distance the `$T` escape may creep while searching for the switch release (the pre-FIXED11 compile-time `LIMIT_RECOVERY_MAX_TRAVEL`). Default `10.0`. On failure — wrong declared direction, wiring fault, jammed switch — the axis stops within this budget and the command answers `error:15` + `[MSG:Check Limits]`. Tune it to exceed the worst-case overtravel of your switches while staying inside the mechanical margin. At run time the budget is additionally clamped to the axis max travel (`$130`-`$132`). `$29=0` disables the `$T` escape entirely; negative values are rejected. Older EEPROM records migrate automatically with `$29=10`.
 
 #### $30 - Max spindle speed, RPM
 

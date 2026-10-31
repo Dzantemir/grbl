@@ -449,7 +449,13 @@ uint8_t limits_escape(uint8_t axis, uint8_t negative)
 
   // ---- Phase 1: creep toward the declared free side until the input releases ----
   system_convert_array_steps_to_mpos(target, sys_position);
-  target[axis] += dir*settings.limit_recovery_travel; // $29 budget (default LIMIT_RECOVERY_MAX_TRAVEL).
+  // $29 budget, clamped to the axis $13x max travel (6th audit): a typo like
+  // $29=999999 must not void the "cannot run away" guarantee. max_travel is
+  // stored negative; a zero/unset $13x leaves the budget unclamped.
+  float budget = settings.limit_recovery_travel;
+  float axis_cap = -settings.max_travel[axis];
+  if ((axis_cap > 0.0) && (budget > axis_cap)) { budget = axis_cap; }
+  target[axis] += dir*budget;
   pl_data->feed_rate = settings.homing_feed_rate; // $24: slow, precise release detection.
   plan_buffer_line(target, pl_data); // Bypass mc_line(): plan the system motion directly.
   sys.homing_axis_lock = get_step_pin_mask(axis); // Stepper ISR masks steps in STATE_HOMING.

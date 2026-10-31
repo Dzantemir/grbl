@@ -23,7 +23,7 @@
 
 // Grbl versioning system
 #define GRBL_VERSION "1.1h"
-#define GRBL_VERSION_BUILD "20261030_ALOE_FIXED11"
+#define GRBL_VERSION_BUILD "20261030_ALOE_FIXED12"
 
 // Define standard libraries used by Grbl.
 #include <avr/io.h>
